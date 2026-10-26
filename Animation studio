@@ -546,56 +546,113 @@ local function getDetails(id)
 	return nil
 end
 
+local function normalizeAnimationId(value)
+	local raw = tostring(value or "")
+	local digits = raw:match("(%d+)")
+	return digits or raw
+end
+
 local function getTargetSpeed(slot)
 	if scriptSettings.advanceSpeed and slot then
-		return scriptSettings.customSpeeds[slot] or 1
-	else
-		return scriptSettings.globalSpeed or 1
+		return tonumber(scriptSettings.customSpeeds[slot]) or 1
 	end
+	return tonumber(scriptSettings.globalSpeed) or 1
 end
 
 local function applySpeed(track, slot)
 	if not track then return end
 	local speed = getTargetSpeed(slot)
-	pcall(function() track:AdjustSpeed(speed) end)
+	local currentSpeed
+	pcall(function() currentSpeed = track.Speed end)
+	if type(currentSpeed) ~= "number" or math.abs(currentSpeed - speed) > 0.001 then
+		pcall(function() track:AdjustSpeed(speed) end)
+	end
 end
 
-local function hookAnimator(character)
-	if not character then return end
-	local human = character:FindFirstChildOfClass("Humanoid")
-	if not human then return end
-	local animator = human:FindFirstChildOfClass("Animator")
-	if not animator then return end
-	
-	track(animator.AnimationPlayed:Connect(function(tr)
-		local pName = tr.Animation.Parent and tr.Animation.Parent.Name
-		local isTool = (pName == "tool") or (string.lower(tr.Animation.Name):find("tool"))
-		
-		if scriptSettings.forceAnimation and isTool then
-			tr:Stop(0)
-			return
-		end
-
-		local slot = nil
-		if pName and reverseM[pName] then
-			slot = reverseM[pName]
-		else
-			for sName, list in pairs(equippedAnims) do
-				for _, anim in ipairs(list) do
-					if anim.Name == tr.Animation.Name or anim.AnimationId == tr.Animation.AnimationId then
-						slot = sName
-						break
+local function getTrackSlot(tr)
+	local animation = tr and tr.Animation
+	if not animation then return nil end
+	local character = lp.Character
+	local animate = character and character:FindFirstChild("Animate")
+	local node = animation
+	while node and node ~= animate do
+		local slot = reverseM[string.lower(node.Name)]
+		if slot then return slot end
+		node = node.Parent
+	end
+	local targetId = normalizeAnimationId(animation.AnimationId)
+	if animate and targetId ~= "" then
+		for folderName, slot in pairs(reverseM) do
+			local folder = animate:FindFirstChild(folderName)
+			if folder then
+				for _, item in ipairs(folder:GetDescendants()) do
+					if item:IsA("Animation") and normalizeAnimationId(item.AnimationId) == targetId then
+						return slot
 					end
 				end
-				if slot then break end
 			end
 		end
-		applySpeed(tr, slot)
-	end))
+	end
+	for sName, list in pairs(equippedAnims) do
+		for _, anim in ipairs(list) do
+			if anim.Name == animation.Name or normalizeAnimationId(anim.AnimationId) == targetId then
+				return sName
+			end
+		end
+	end
+	return nil
+end
+
+local function applyTrackSpeed(tr)
+	local animation = tr and tr.Animation
+	if not animation then return end
+	local pName = animation.Parent and string.lower(animation.Parent.Name) or ""
+	local animationName = string.lower(animation.Name or "")
+	local isTool = pName == "tool" or animationName:find("tool", 1, true) ~= nil
+	if scriptSettings.forceAnimation and isTool then
+		tr:Stop(0)
+		return
+	end
+	applySpeed(tr, getTrackSlot(tr))
+end
+
+local function applyCurrentCharacterSpeeds()
+	local character = lp.Character
+	local human = character and character:FindFirstChildOfClass("Humanoid")
+	local animator = human and human:FindFirstChildOfClass("Animator")
+	if not animator then return end
+	for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do
+		applyTrackSpeed(tr)
+	end
+end
+
+local hookedAnimators = setmetatable({}, {__mode = "k"})
+local function hookAnimator(character)
+	if not character then return end
+	task.spawn(function()
+		local human = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+		if not human or character ~= lp.Character then return end
+		local animator = human:FindFirstChildOfClass("Animator") or human:WaitForChild("Animator", 5)
+		if not animator then
+			animator = Instance.new("Animator")
+			animator.Parent = human
+		end
+		if hookedAnimators[animator] then return end
+		hookedAnimators[animator] = true
+		track(animator.AnimationPlayed:Connect(function(animationTrack)
+			task.defer(function()
+				if animationTrack and animationTrack.IsPlaying then applyTrackSpeed(animationTrack) end
+			end)
+		end))
+		for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do
+			applyTrackSpeed(tr)
+		end
+	end)
 end
 
 track(lp.CharacterAdded:Connect(hookAnimator))
 if lp.Character then hookAnimator(lp.Character) end
+track(rs.Heartbeat:Connect(applyCurrentCharacterSpeeds))
 
 local function equipMap(character, slotMap, persist)
 	if not character then return 0 end
@@ -1493,6 +1550,7 @@ addSettingLabel("Global Animation Speed", s(160))
 createSlider(setScroll, "", 0.25, 5, scriptSettings.globalSpeed, s(180), function(val)
     scriptSettings.globalSpeed = val
     saveSettings()
+    applyCurrentCharacterSpeeds()
 end)
 
 addSettingLabel("Advance Speed Animation", s(230))
@@ -1511,6 +1569,7 @@ local function createCustomSliders()
             local row = createSlider(setScroll, shortNames[slot] .. " Speed", 0.25, 5, currentVal, customSpeedsY, function(val)
                 scriptSettings.customSpeeds[slot] = val
                 saveSettings()
+                applyCurrentCharacterSpeeds()
             end)
             customSpeedRows[#customSpeedRows + 1] = row
             customSpeedsY += s(45)
@@ -1525,6 +1584,7 @@ advToggle.MouseButton1Click:Connect(function()
     setBtn(advToggle, scriptSettings.advanceSpeed and C.accent2 or C.surface, 0, scriptSettings.advanceSpeed and Color3.new(0,0,0) or C.textDim)
     saveSettings()
     createCustomSliders()
+    applyCurrentCharacterSpeeds()
 end)
 
 local footer = new("Frame", {Position = UDim2.fromOffset(0, BODY_H - FOOT_H), Size = UDim2.fromOffset(LW, FOOT_H), BackgroundTransparency = 1}, left)
