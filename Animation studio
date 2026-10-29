@@ -262,7 +262,7 @@ end
 local function setParam(p, name, value) return (pcall(function() p[name] = value end)) end
 
 local m = {
-	["runanimation"] = "run", ["climbanimation"] = "climb", ["jumpanimation"] = "jump", ["fallanimation"] = "fall",
+	["idle1animation"] = "idle", ["idle2animation"] = "idle", ["runanimation"] = "run", ["climbanimation"] = "climb", ["jumpanimation"] = "jump", ["fallanimation"] = "fall",
 	["idleanimation"] = "idle", ["swimidleanimation"] = "swimidle", ["swimanimation"] = "swim", ["walkanimation"] = "walk",
 }
 local reverseM = {
@@ -270,7 +270,7 @@ local reverseM = {
 	["idle"] = "idleanimation", ["swimidle"] = "swimidleanimation", ["swim"] = "swimanimation", ["walk"] = "walkanimation",
 }
 local shortNames = {
-	["idleanimation"] = "Idle", ["walkanimation"] = "Walk", ["runanimation"] = "Run", ["jumpanimation"] = "Jump",
+	["idleanimation"] = "Idle", ["idle1animation"] = "Idle1", ["idle2animation"] = "Idle2", ["walkanimation"] = "Walk", ["runanimation"] = "Run", ["jumpanimation"] = "Jump",
 	["fallanimation"] = "Fall", ["climbanimation"] = "Climb", ["swimidleanimation"] = "S.Idle", ["swimanimation"] = "Swim",
 }
 local buttonOrder = {"idleanimation", "walkanimation", "runanimation", "jumpanimation", "fallanimation", "climbanimation", "swimidleanimation", "swimanimation"}
@@ -333,6 +333,9 @@ if next(historyList) ~= nil and historyList[1] == nil then historyList = {} end
 if not scriptSettings.globalSpeed then scriptSettings.globalSpeed = 1 end
 if not scriptSettings.customSpeeds then scriptSettings.customSpeeds = {} end
 if scriptSettings.advanceSpeed == nil then scriptSettings.advanceSpeed = false end
+if scriptSettings.advanceAnimationEdit == nil then scriptSettings.advanceAnimationEdit = false end
+if scriptSettings.idle1Enabled == nil then scriptSettings.idle1Enabled = true end
+if scriptSettings.idle2Enabled == nil then scriptSettings.idle2Enabled = true end
 if scriptSettings.restoreLastPack == nil then scriptSettings.restoreLastPack = false end
 if scriptSettings.forceAnimation == nil then scriptSettings.forceAnimation = false end
 
@@ -381,6 +384,10 @@ local function mapBundleItems(items)
 			end
 		end
 	end
+	if map.idleanimation then
+		map.idle1animation = map.idleanimation
+		map.idle2animation = map.idleanimation
+	end
 	return map
 end
 
@@ -409,7 +416,9 @@ local function fetchAnimations(id, bundleId, assetType)
 			for _, folderName in ipairs(DESC_FOLDERS[descProp] or {}) do
 				local folder = animate:FindFirstChild(folderName)
 				if folder then
-					for _, child in ipairs(folder:GetChildren()) do
+					local children = folder:GetChildren()
+					table.sort(children, function(a, b) return a.Name < b.Name end)
+					for _, child in ipairs(children) do
 						if child:IsA("Animation") and child.AnimationId ~= "" then
 							local clone = child:Clone()
 							t[#t + 1] = clone
@@ -507,10 +516,26 @@ local function getTracksFor(payload, slot)
 			end
 			payload.Tracks = out
 		end
+		if slot == "idle1animation" or slot == "idle2animation" then
+			local index = slot == "idle1animation" and 1 or 2
+			local source = payload.Tracks[index]
+			if not source then return {} end
+			local copy = source:Clone()
+			copy.Name = index == 1 and "Animation1" or "Animation2"
+			return {copy}
+		end
 		return payload.Tracks
 	end
 	local list = get(payload.Id, nil, payload.AssetType)
 	if #list == 0 then return {} end
+	if slot == "idle1animation" or slot == "idle2animation" then
+		local index = slot == "idle1animation" and 1 or 2
+		local source = list[index]
+		if not source then return {} end
+		local copy = source:Clone()
+		copy.Name = index == 1 and "Animation1" or "Animation2"
+		return {copy}
+	end
 	if slot == "idleanimation" then return list end
 	local spec = getSpecificTrack(list, slot)
 	return spec and {spec} or {}
@@ -575,6 +600,10 @@ local function getTrackSlot(tr)
 	local character = lp.Character
 	local animate = character and character:FindFirstChild("Animate")
 	local node = animation
+	local animName = string.lower(tostring(animation.Name or ""))
+	local parentName = animation.Parent and string.lower(tostring(animation.Parent.Name or "")) or ""
+	if parentName == "idle" and animName == "animation1" then return "idle1animation" end
+	if parentName == "idle" and animName == "animation2" then return "idle2animation" end
 	while node and node ~= animate do
 		local slot = reverseM[string.lower(node.Name)]
 		if slot then return slot end
@@ -654,6 +683,42 @@ track(lp.CharacterAdded:Connect(hookAnimator))
 if lp.Character then hookAnimator(lp.Character) end
 track(rs.Heartbeat:Connect(applyCurrentCharacterSpeeds))
 
+local idleOriginalIds = setmetatable({}, {__mode = "k"})
+local function applyIdleSettings(character, refreshOriginal)
+    if not character then return end
+    local animate = character:FindFirstChild("Animate")
+    local human = character:FindFirstChildOfClass("Humanoid")
+    if not animate or not human or human.RigType == Enum.HumanoidRigType.R6 then return end
+    local idleFolder = animate:FindFirstChild("idle")
+    if not idleFolder then return end
+    local a1 = idleFolder:FindFirstChild("Animation1")
+    local a2 = idleFolder:FindFirstChild("Animation2")
+    if not a1 or not a1:IsA("Animation") or not a2 or not a2:IsA("Animation") then return end
+    local original = idleOriginalIds[character]
+    if not original then original = {}; idleOriginalIds[character] = original end
+    if refreshOriginal or original.one == nil or original.two == nil then
+        original.one = a1.AnimationId
+        original.two = a2.AnimationId
+    end
+    local one = original.one or a1.AnimationId
+    local two = original.two or a2.AnimationId
+    if scriptSettings.idle1Enabled and scriptSettings.idle2Enabled then
+        a1.AnimationId, a2.AnimationId = one, two
+    elseif scriptSettings.idle1Enabled then
+        a1.AnimationId, a2.AnimationId = one, one
+    elseif scriptSettings.idle2Enabled then
+        a1.AnimationId, a2.AnimationId = two, two
+    else
+        a1.AnimationId, a2.AnimationId = "rbxassetid://0", "rbxassetid://0"
+        for _, tr in ipairs(human:GetPlayingAnimationTracks()) do
+            local anim = tr.Animation
+            if anim and string.lower(anim.Name or ""):find("animation[12]") then
+                pcall(function() tr:Stop(0.1) end)
+            end
+        end
+    end
+end
+
 local function equipMap(character, slotMap, persist)
 	if not character then return 0 end
 	local animate = character:FindFirstChild("Animate") or character:WaitForChild("Animate", 5)
@@ -675,24 +740,49 @@ local function equipMap(character, slotMap, persist)
 		local folderName = m[slot]
 		local folder = folderName and animate:FindFirstChild(folderName)
 		if folder and #anims > 0 then
-			for _, o in ipairs(folder:GetChildren()) do
-				if o:IsA("Animation") then o:Destroy() end
-			end
+			local isSingleIdle = slot == "idle1animation" or slot == "idle2animation"
+			local targetName = slot == "idle1animation" and "Animation1" or "Animation2"
 			local saved = {}
-			for _, a in ipairs(anims) do
-				local na = Instance.new("Animation")
-				na.Name = a.Name
-				na.AnimationId = a.AnimationId
-				na.Parent = folder
-				saved[#saved + 1] = {Name = a.Name, AnimationId = a.AnimationId}
+			if isSingleIdle then
+				local existing = {}
+				for _, o in ipairs(folder:GetChildren()) do
+					if o:IsA("Animation") then existing[o.Name] = o.AnimationId end
+				end
+				for _, o in ipairs(folder:GetChildren()) do
+					if o:IsA("Animation") and o.Name == targetName then o:Destroy() end
+				end
+				for _, a in ipairs(anims) do
+					local na = Instance.new("Animation")
+					na.Name = targetName
+					na.AnimationId = a.AnimationId
+					na.Parent = folder
+				end
+				local merged = {}
+				for _, name in ipairs({"Animation1", "Animation2"}) do
+					local found = folder:FindFirstChild(name)
+					if found and found:IsA("Animation") then merged[#merged + 1] = {Name = name, AnimationId = found.AnimationId} end
+				end
+				if persist then equippedAnims.idleanimation = merged; saveJSON(EQUIPPED_FILE, equippedAnims) end
+			else
+				for _, o in ipairs(folder:GetChildren()) do
+					if o:IsA("Animation") then o:Destroy() end
+				end
+				for _, a in ipairs(anims) do
+					local na = Instance.new("Animation")
+					na.Name = a.Name
+					na.AnimationId = a.AnimationId
+					na.Parent = folder
+					saved[#saved + 1] = {Name = a.Name, AnimationId = a.AnimationId}
+				end
+				if persist then equippedAnims[slot] = saved end
 			end
-			if persist then equippedAnims[slot] = saved end
 			count = count + 1
 		end
 	end
 	if persist then saveJSON(EQUIPPED_FILE, equippedAnims) end
 	task.wait(0.05)
 	animate.Disabled = false
+    applyIdleSettings(character, true)
 	return count
 end
 
@@ -822,7 +912,9 @@ local function initAutoEquip(char)
 		if char ~= lp.Character or human.Health <= 0 then return end
 		if next(equippedAnims) ~= nil then
 			equipMap(char, equippedAnims, false)
-		end
+        else
+            applyIdleSettings(char, true)
+        end
 	end)
 end
 if lp.Character then initAutoEquip(lp.Character) end
@@ -1467,6 +1559,9 @@ local HELP_TEXT = table.concat({
 	'<font color="#B0B0B2">is:</font> favorite  free  paid  offsale',
 	'<font color="#B0B0B2">Recent tab:</font> same filters except is:favorite',
 	'',
+	'<b>Advance Animation Edit — Idle 1 / Idle 2</b>',
+	'Idle 1 and Idle 2 are enabled by default. Turn one off to keep looping only the other idle animation. Turn both off to suppress idle animation and leave the character in its current pose. These settings appear only while Advance Animation Edit is ON.',
+	'',
 	'<b>Presets tab</b>',
 	'<font color="#B0B0B2">sort:</font> newest  oldest  name   (search filters by name)',
 	'',
@@ -1546,25 +1641,74 @@ forceToggle.MouseButton1Click:Connect(function()
     saveSettings()
 end)
 
-addSettingLabel("Global Animation Speed", s(160))
-createSlider(setScroll, "", 0.25, 5, scriptSettings.globalSpeed, s(180), function(val)
+addSettingLabel("Advance Animation Edit", s(155))
+local editToggle = mkBtn(setScroll, {Text = scriptSettings.advanceAnimationEdit and "ON" or "OFF", Size = UDim2.fromOffset(s(50), s(25)), Position = UDim2.fromOffset(0, s(180)), TextSize = s(14), ZIndex = 22}, scriptSettings.advanceAnimationEdit and C.accent2 or C.surface, 0, scriptSettings.advanceAnimationEdit and Color3.new(0,0,0) or C.textDim)
+corner(editToggle, s(6))
+
+local helpOpen, settingsOpen = false, false
+local idleSlotsLabel = addSettingLabel("Idle Animation Slots", s(205))
+local idle1Toggle = mkBtn(setScroll, {Text = "Idle 1: " .. (scriptSettings.idle1Enabled and "ON" or "OFF"), Size = UDim2.fromOffset(s(90), s(27)), Position = UDim2.fromOffset(0, s(230)), TextSize = s(12), Visible = scriptSettings.advanceAnimationEdit, ZIndex = 22}, scriptSettings.idle1Enabled and C.accent2 or C.surface, 0, scriptSettings.idle1Enabled and Color3.new(0,0,0) or C.textDim)
+corner(idle1Toggle, s(6))
+local idle2Toggle = mkBtn(setScroll, {Text = "Idle 2: " .. (scriptSettings.idle2Enabled and "ON" or "OFF"), Size = UDim2.fromOffset(s(90), s(27)), Position = UDim2.fromOffset(s(98), s(230)), TextSize = s(12), Visible = scriptSettings.advanceAnimationEdit, ZIndex = 22}, scriptSettings.idle2Enabled and C.accent2 or C.surface, 0, scriptSettings.idle2Enabled and Color3.new(0,0,0) or C.textDim)
+corner(idle2Toggle, s(6))
+local idleGuideBtn = mkBtn(setScroll, {Text = "?", Size = UDim2.fromOffset(s(26), s(26)), Position = UDim2.fromOffset(s(195), s(230)), TextSize = s(14), Visible = scriptSettings.advanceAnimationEdit, ZIndex = 22}, C.surface, 0.2, C.textDim)
+corner(idleGuideBtn, s(6))
+local function refreshIdleToggles()
+    idle1Toggle.Text = "Idle 1: " .. (scriptSettings.idle1Enabled and "ON" or "OFF")
+    idle2Toggle.Text = "Idle 2: " .. (scriptSettings.idle2Enabled and "ON" or "OFF")
+    setBtn(idle1Toggle, scriptSettings.idle1Enabled and C.accent2 or C.surface, 0, scriptSettings.idle1Enabled and Color3.new(0,0,0) or C.textDim)
+    setBtn(idle2Toggle, scriptSettings.idle2Enabled and C.accent2 or C.surface, 0, scriptSettings.idle2Enabled and Color3.new(0,0,0) or C.textDim)
+    idleSlotsLabel.Visible = scriptSettings.advanceAnimationEdit
+    idle1Toggle.Visible = scriptSettings.advanceAnimationEdit
+    idle2Toggle.Visible = scriptSettings.advanceAnimationEdit
+    idleGuideBtn.Visible = scriptSettings.advanceAnimationEdit
+end
+local function applyIdleSettingsToCurrent()
+    saveSettings()
+    if lp.Character then applyIdleSettings(lp.Character, false) end
+end
+idle1Toggle.MouseButton1Click:Connect(function()
+    scriptSettings.idle1Enabled = not scriptSettings.idle1Enabled
+    refreshIdleToggles()
+    applyIdleSettingsToCurrent()
+end)
+idle2Toggle.MouseButton1Click:Connect(function()
+    scriptSettings.idle2Enabled = not scriptSettings.idle2Enabled
+    refreshIdleToggles()
+    applyIdleSettingsToCurrent()
+end)
+idleGuideBtn.MouseButton1Click:Connect(function()
+    settingsOpen = false
+    helpOpen = true
+    settingsPanel.Visible = false
+    helpPanel.Visible = true
+    tw(helpPanel, 0.2, {BackgroundTransparency = 0.15})
+    tw(helpText, 0.22, {TextTransparency = 0})
+    setBtn(helpBtn, C.surfaceHi, 0.1, C.text)
+    setBtn(settingsBtn, C.surface, 0.2, C.textDim)
+end)
+refreshIdleToggles()
+
+addSettingLabel("Global Animation Speed", s(280))
+createSlider(setScroll, "", 0.25, 5, scriptSettings.globalSpeed, s(300), function(val)
     scriptSettings.globalSpeed = val
     saveSettings()
     applyCurrentCharacterSpeeds()
 end)
 
-addSettingLabel("Advance Speed Animation", s(230))
-local advToggle = mkBtn(setScroll, {Text = scriptSettings.advanceSpeed and "ON" or "OFF", Size = UDim2.fromOffset(s(50), s(25)), Position = UDim2.fromOffset(0, s(255)), TextSize = s(14), ZIndex = 22}, scriptSettings.advanceSpeed and C.accent2 or C.surface, 0, scriptSettings.advanceSpeed and Color3.new(0,0,0) or C.textDim)
+addSettingLabel("Advance Speed Animation", s(350))
+local advToggle = mkBtn(setScroll, {Text = scriptSettings.advanceSpeed and "ON" or "OFF", Size = UDim2.fromOffset(s(50), s(25)), Position = UDim2.fromOffset(0, s(375)), TextSize = s(14), ZIndex = 22}, scriptSettings.advanceSpeed and C.accent2 or C.surface, 0, scriptSettings.advanceSpeed and Color3.new(0,0,0) or C.textDim)
 corner(advToggle, s(6))
 
 local customSpeedRows = {}
-local customSpeedsY = s(290)
+local customSpeedsY = s(410)
 local function createCustomSliders()
     for _, row in ipairs(customSpeedRows) do row:Destroy() end
     table.clear(customSpeedRows)
-    customSpeedsY = s(290)
+    customSpeedsY = s(410)
     if scriptSettings.advanceSpeed then
-        for _, slot in ipairs(buttonOrder) do
+        local speedOrder = {"idle1animation", "idle2animation", "walkanimation", "runanimation", "jumpanimation", "fallanimation", "climbanimation", "swimidleanimation", "swimanimation"}
+        for _, slot in ipairs(speedOrder) do
             local currentVal = scriptSettings.customSpeeds[slot] or 1
             local row = createSlider(setScroll, shortNames[slot] .. " Speed", 0.25, 5, currentVal, customSpeedsY, function(val)
                 scriptSettings.customSpeeds[slot] = val
@@ -1631,6 +1775,11 @@ for i, slot in ipairs(buttonOrder) do
 	corner(b, s(8))
 	slotButtons[slot] = b
 end
+for _, slot in ipairs({"idle1animation", "idle2animation"}) do
+	local b = mkBtn(slotGrid, {Text = shortNames[slot], LayoutOrder = 1, TextSize = s(14), Visible = false}, C.surface, 0.5, C.textMuted)
+	corner(b, s(8))
+	slotButtons[slot] = b
+end
 
 local yAct = ySlots + s(60) + s(8)
 local halfW = math.floor((innerW - s(10)) / 2)
@@ -1640,6 +1789,30 @@ local wearAllBtn = mkBtn(rightP, {Text = "Wear All", Size = UDim2.fromOffset(hal
 corner(wearAllBtn, s(9))
 local resetBtn = mkBtn(rightP, {Text = "RESET TO DEFAULT", Size = UDim2.fromOffset(innerW, s(34)), Position = UDim2.fromOffset(IP, yAct + s(34) + s(8)), TextSize = s(14), Font = Enum.Font.GothamBold}, Color3.fromRGB(160, 80, 80), 0.1, WHITE)
 corner(resetBtn, s(8))
+
+local function updateIdleEditButtons()
+	local enabled = scriptSettings.advanceAnimationEdit
+	slotButtons.idleanimation.Visible = not enabled
+	slotButtons.idle1animation.Visible = enabled
+	slotButtons.idle2animation.Visible = enabled
+	if enabled then
+		slotButtons.idle1animation.LayoutOrder = 1
+		slotButtons.idle2animation.LayoutOrder = 2
+		for i, slot in ipairs(buttonOrder) do
+			if slot ~= "idleanimation" then slotButtons[slot].LayoutOrder = i + 1 end
+		end
+		slotGrid.Size = UDim2.fromOffset(innerW, s(96))
+		yAct = ySlots + s(96) + s(8)
+	else
+		for i, slot in ipairs(buttonOrder) do slotButtons[slot].LayoutOrder = i end
+		slotGrid.Size = UDim2.fromOffset(innerW, s(60))
+		yAct = ySlots + s(60) + s(8)
+	end
+	wearSelBtn.Position = UDim2.fromOffset(IP, yAct)
+	wearAllBtn.Position = UDim2.fromOffset(IP + halfW + s(10), yAct)
+	resetBtn.Position = UDim2.fromOffset(IP, yAct + s(34) + s(8))
+end
+
 
 local toastLbl = new("TextLabel", {
 	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -s(18)), Size = UDim2.fromOffset(0, s(34)), AutomaticSize = Enum.AutomaticSize.X,
@@ -1660,6 +1833,7 @@ local activeSpec
 local activeBundle
 local currentBundleItems = {}
 local selectedSlot = "idleanimation"
+updateIdleEditButtons()
 local searchGen, masterGen, inspectGen = 0, 0, 0
 local masterTrack, masterRig, masterAnimator
 local cards, skeletons = {}, {}
@@ -1780,7 +1954,7 @@ end
 local function refreshSlotButtons()
 	for slot, b in pairs(slotButtons) do
 		local has = currentBundleItems[slot] ~= nil
-		if has and slot == selectedSlot then setBtn(b, C.surfaceHi, 0, C.text)
+		if has and slot == selectedSlot and b.Visible then setBtn(b, C.surfaceHi, 0, C.text)
 		elseif has then setBtn(b, C.surface, 0.2, C.text)
 		else setBtn(b, C.surface, 0.5, C.textMuted) end
 	end
@@ -1858,6 +2032,41 @@ local function updateSelection()
 		if c.box.Parent then c.restore() end
 	end
 end
+
+editToggle.MouseButton1Click:Connect(function()
+    scriptSettings.advanceAnimationEdit = not scriptSettings.advanceAnimationEdit
+    editToggle.Text = scriptSettings.advanceAnimationEdit and "ON" or "OFF"
+    setBtn(editToggle, scriptSettings.advanceAnimationEdit and C.accent2 or C.surface, 0, scriptSettings.advanceAnimationEdit and Color3.new(0,0,0) or C.textDim)
+    if scriptSettings.advanceAnimationEdit then
+        if selectedSlot == "idleanimation" then
+            if currentBundleItems.idle1animation then
+                selectedSlot = "idle1animation"
+            else
+                for _, name in ipairs(buttonOrder) do
+                    if name ~= "idleanimation" and currentBundleItems[name] then selectedSlot = name; break end
+                end
+            end
+        end
+    else
+        if selectedSlot == "idle1animation" or selectedSlot == "idle2animation" then
+            if currentBundleItems.idleanimation then
+                selectedSlot = "idleanimation"
+            else
+                selectedSlot = nil
+                for _, name in ipairs(buttonOrder) do
+                    if currentBundleItems[name] then selectedSlot = name; break end
+                end
+                selectedSlot = selectedSlot or "idleanimation"
+            end
+        end
+    end
+    saveSettings()
+    refreshIdleToggles()
+    updateIdleEditButtons()
+    refreshSlotButtons()
+    updateSelection()
+end)
+
 
 local function runMasterPlayback(myGen, payload, slot, tracks)
 	local refetched = false
@@ -1968,6 +2177,14 @@ inspectBundle = function(entry)
 end
 
 for _, slot in ipairs(buttonOrder) do
+	slotButtons[slot].MouseButton1Click:Connect(function()
+		if not activeBundle or not currentBundleItems[slot] then return end
+		selectedSlot = slot
+		refreshSlotButtons()
+		playMaster(slot)
+	end)
+end
+for _, slot in ipairs({"idle1animation", "idle2animation"}) do
 	slotButtons[slot].MouseButton1Click:Connect(function()
 		if not activeBundle or not currentBundleItems[slot] then return end
 		selectedSlot = slot
@@ -2766,6 +2983,10 @@ do
 				currentBundleItems[slot] = {Id = "preset:" .. tostring(p.Id) .. "/" .. slot, Name = p.Name, AssetType = slot, Direct = list}
 			end
 		end
+		if currentBundleItems.idleanimation then
+			currentBundleItems.idle1animation = currentBundleItems.idleanimation
+			currentBundleItems.idle2animation = currentBundleItems.idleanimation
+		end
 		refreshActiveInfo()
 		updateSelection()
 		local slot = currentBundleItems[selectedSlot] and selectedSlot or nil
@@ -3123,7 +3344,6 @@ nextBtn.MouseButton1Click:Connect(function()
 	end
 end)
 
-local helpOpen = false
 helpBtn.MouseButton1Click:Connect(function()
 	helpOpen = not helpOpen
     settingsPanel.Visible = false
@@ -3144,7 +3364,6 @@ helpBtn.MouseButton1Click:Connect(function()
 end)
 pad(helpScroll, s(14), s(14), s(10), s(10))
 
-local settingsOpen = false
 settingsBtn.MouseButton1Click:Connect(function()
     settingsOpen = not settingsOpen
     helpPanel.Visible = false
