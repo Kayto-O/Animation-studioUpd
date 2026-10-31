@@ -719,6 +719,36 @@ local function applyIdleSettings(character, refreshOriginal)
     end
 end
 
+local function createAnimationSnapshot()
+    local snapshot = {}
+    for slot, list in pairs(equippedAnims) do
+        if type(list) == "table" then
+            local copied = {}
+            for _, animation in ipairs(list) do
+                if type(animation) == "table" and type(animation.AnimationId) == "string" then
+                    copied[#copied + 1] = {
+                        Name = tostring(animation.Name or "Animation"),
+                        AnimationId = animation.AnimationId,
+                    }
+                end
+            end
+            if #copied > 0 then snapshot[slot] = copied end
+        end
+    end
+    return snapshot
+end
+
+local sessionAnimationSnapshot = nil
+local initialCharacterProcessed = false
+
+local function saveAnimationSnapshot()
+    lastPackData = type(lastPackData) == "table" and lastPackData or {}
+    lastPackData.Version = 2
+    lastPackData.Animations = createAnimationSnapshot()
+    lastPackData.SavedAt = os.time()
+    saveJSON(LAST_PACK_FILE, lastPackData)
+end
+
 local function equipMap(character, slotMap, persist)
 	if not character then return 0 end
 	local animate = character:FindFirstChild("Animate") or character:WaitForChild("Animate", 5)
@@ -779,7 +809,11 @@ local function equipMap(character, slotMap, persist)
 			count = count + 1
 		end
 	end
-	if persist then saveJSON(EQUIPPED_FILE, equippedAnims) end
+	if persist then
+        saveJSON(EQUIPPED_FILE, equippedAnims)
+        sessionAnimationSnapshot = createAnimationSnapshot()
+        saveAnimationSnapshot()
+    end
 	task.wait(0.05)
 	animate.Disabled = false
     applyIdleSettings(character, true)
@@ -875,8 +909,9 @@ local function wearBundle(bundleId, bundleName, onDone)
 			local n = applyBundleItemsToCharacter(mapBundleItems(details.Items))
 			if n > 0 then 
 				recordHistory(bundleId, bundleName) 
-				lastPackData = {Id = bundleId, Name = bundleName}
-				saveJSON(LAST_PACK_FILE, lastPackData)
+				lastPackData.Id = bundleId
+                lastPackData.Name = bundleName
+                saveAnimationSnapshot()
 			end
 			if toast then toast(n > 0 and ("Equipped " .. n .. " animations") or "Nothing could be equipped", n > 0 and "ok" or "bad") end
 		elseif toast then
@@ -887,35 +922,51 @@ local function wearBundle(bundleId, bundleName, onDone)
 end
 
 local function initAutoEquip(char)
-	if not char then return end
-	task.spawn(function()
-		local human = char:WaitForChild("Humanoid", 10)
-		local animate = char:WaitForChild("Animate", 10)
-		if not human or not animate then return end
-		if human.RigType == Enum.HumanoidRigType.R6 then
-			if toast then toast("R6 detected. Custom animations are not supported.", "bad") end
-			return
-		end
-		local animator = human:WaitForChild("Animator", 5)
-		if not animator then
-			animator = Instance.new("Animator")
-			animator.Parent = human
-		end
-		local idleFolder = animate:FindFirstChild("idle")
-		if idleFolder then
-			local idleAnimation = idleFolder:FindFirstChild("Animation1") or idleFolder:FindFirstChildWhichIsA("Animation")
-			if not idleAnimation then
-				idleFolder:WaitForChild("Animation1", 5)
-			end
-		end
-		task.wait(0.75)
-		if char ~= lp.Character or human.Health <= 0 then return end
-		if next(equippedAnims) ~= nil then
-			equipMap(char, equippedAnims, false)
+    if not char then return end
+    local isInitialCharacter = not initialCharacterProcessed
+    initialCharacterProcessed = true
+    task.spawn(function()
+        local human = char:WaitForChild("Humanoid", 10)
+        local animate = char:WaitForChild("Animate", 10)
+        if not human or not animate then return end
+        if human.RigType == Enum.HumanoidRigType.R6 then
+            if toast then toast("R6 detected. Custom animations are not supported.", "bad") end
+            return
+        end
+        local animator = human:WaitForChild("Animator", 5)
+        if not animator then
+            animator = Instance.new("Animator")
+            animator.Parent = human
+        end
+        local idleFolder = animate:FindFirstChild("idle")
+        if idleFolder then
+            local idleAnimation = idleFolder:FindFirstChild("Animation1") or idleFolder:FindFirstChildWhichIsA("Animation")
+            if not idleAnimation then idleFolder:WaitForChild("Animation1", 5) end
+        end
+        task.wait(0.75)
+        if char ~= lp.Character or human.Health <= 0 then return end
+
+        if isInitialCharacter then
+            if scriptSettings.restoreLastPack then
+                local snapshot = type(lastPackData) == "table" and type(lastPackData.Animations) == "table" and lastPackData.Animations or nil
+                if snapshot and next(snapshot) ~= nil then
+                    sessionAnimationSnapshot = snapshot
+                    equipMap(char, snapshot, false)
+                else
+                    sessionAnimationSnapshot = nil
+                    applyIdleSettings(char, true)
+                end
+            else
+                sessionAnimationSnapshot = nil
+                for slot in pairs(equippedAnims) do equippedAnims[slot] = nil end
+                applyIdleSettings(char, true)
+            end
+        elseif sessionAnimationSnapshot and next(sessionAnimationSnapshot) ~= nil then
+            equipMap(char, sessionAnimationSnapshot, false)
         else
             applyIdleSettings(char, true)
         end
-	end)
+    end)
 end
 if lp.Character then initAutoEquip(lp.Character) end
 track(lp.CharacterAdded:Connect(initAutoEquip))
@@ -2208,8 +2259,9 @@ wearSelBtn.MouseButton1Click:Connect(function()
 			local n = equipMap(lp.Character, {[slot] = list}, true)
 			if n > 0 and activeBundle and not activeBundle.IsPreset then 
 				recordHistory(activeBundle.Id, activeBundle.Name) 
-				lastPackData = {Id = activeBundle.Id, Name = activeBundle.Name}
-				saveJSON(LAST_PACK_FILE, lastPackData)
+				lastPackData.Id = activeBundle.Id
+                lastPackData.Name = activeBundle.Name
+                saveAnimationSnapshot()
 			end
 			toast(n > 0 and ("Equipped " .. shortNames[slot]) or "Couldn't equip that slot", n > 0 and "ok" or "bad")
 		else
@@ -2229,8 +2281,9 @@ wearAllBtn.MouseButton1Click:Connect(function()
 		local n = applyBundleItemsToCharacter(currentBundleItems)
 		if n > 0 and activeBundle and not activeBundle.IsPreset then 
 			recordHistory(activeBundle.Id, activeBundle.Name) 
-			lastPackData = {Id = activeBundle.Id, Name = activeBundle.Name}
-			saveJSON(LAST_PACK_FILE, lastPackData)
+			lastPackData.Id = activeBundle.Id
+            lastPackData.Name = activeBundle.Name
+            saveAnimationSnapshot()
 		end
 		toast(n > 0 and ("Equipped " .. n .. " animations") or "Nothing could be equipped", n > 0 and "ok" or "bad")
 		wearAllBtn.Text = "Wear All"
@@ -2251,9 +2304,10 @@ resetBtn.MouseButton1Click:Connect(function()
 		end
 
 		for k in pairs(equippedAnims) do equippedAnims[k] = nil end
+        sessionAnimationSnapshot = nil
 		saveJSON(EQUIPPED_FILE, equippedAnims)
-		lastPackData = {}
-		saveJSON(LAST_PACK_FILE, lastPackData)
+		lastPackData = {Version = 2, Animations = {}}
+        saveJSON(LAST_PACK_FILE, lastPackData)
 
 		local char = lp.Character
 		local human = char and char:FindFirstChildOfClass("Humanoid")
@@ -3481,13 +3535,6 @@ end
 
 runSearch("")
 
-task.spawn(function()
-    task.wait(1)
-    if scriptSettings.restoreLastPack and lastPackData.Id then
-        wearBundle(lastPackData.Id, lastPackData.Name)
-    end
-end)
-
 env.UgcAnimStudio = {gui = g, main = mf}
 
 end)
@@ -3529,4 +3576,6 @@ else
 			if props then tw(tg.obj, 0.55, props, Enum.EasingStyle.Quint) end
 		end
 	end)
+end
+end)
 end
