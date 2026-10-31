@@ -632,6 +632,60 @@ local function getTrackSlot(tr)
 	return nil
 end
 
+local climbTrackDirections = setmetatable({}, {__mode = "k"})
+
+local function applyClimbTrackSpeed(tr)
+	local character = lp.Character
+	local human = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not human or not root then
+		pcall(function() tr:AdjustSpeed(0) end)
+		return
+	end
+
+	local verticalSpeed = root.AssemblyLinearVelocity.Y
+	local direction = 0
+	if verticalSpeed > 0.15 then
+		direction = 1
+	elseif verticalSpeed < -0.15 then
+		direction = -1
+	end
+
+	if direction == 0 then
+		pcall(function() tr:AdjustSpeed(0) end)
+		climbTrackDirections[tr] = 0
+		return
+	end
+
+	local configuredSpeed = math.abs(getTargetSpeed("climbanimation"))
+	if configuredSpeed < 0.001 then
+		pcall(function() tr:AdjustSpeed(0) end)
+		climbTrackDirections[tr] = direction
+		return
+	end
+
+	local previousDirection = climbTrackDirections[tr]
+	if previousDirection and previousDirection ~= 0 and previousDirection ~= direction then
+		local length = 0
+		local position = 0
+		pcall(function()
+			length = tr.Length
+			position = tr.TimePosition
+		end)
+		if type(length) == "number" and length > 0 then
+			pcall(function() tr.TimePosition = math.clamp(length - position, 0, length) end)
+		end
+	end
+
+	climbTrackDirections[tr] = direction
+	local targetSpeed = configuredSpeed * direction
+	local currentSpeed
+	pcall(function() currentSpeed = tr.Speed end)
+	if type(currentSpeed) ~= "number" or math.abs(currentSpeed - targetSpeed) > 0.001 then
+		pcall(function() tr:AdjustSpeed(targetSpeed) end)
+	end
+end
+
 local function applyTrackSpeed(tr)
 	local animation = tr and tr.Animation
 	if not animation then return end
@@ -642,7 +696,12 @@ local function applyTrackSpeed(tr)
 		tr:Stop(0)
 		return
 	end
-	applySpeed(tr, getTrackSlot(tr))
+	local slot = getTrackSlot(tr)
+	if slot == "climbanimation" then
+		applyClimbTrackSpeed(tr)
+	else
+		applySpeed(tr, slot)
+	end
 end
 
 local function applyCurrentCharacterSpeeds()
